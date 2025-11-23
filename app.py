@@ -1,4 +1,3 @@
-
 import streamlit as st
 import tensorflow as tf
 from PIL import Image
@@ -6,54 +5,51 @@ import numpy as np
 import base64
 import io
 
+# --------------------------
+# Paths
+# --------------------------
+MODEL_PATH = r"C:\Users\ASUS\OneDrive\Desktop\plant-app\plant_model (1).keras"
+BG_PATH = "assets/bgimage.jpg"
+IMG_SIZE = 224
+
+# --------------------------
+# Background helper
+# --------------------------
 def add_bg(local_image_path):
-    with open(local_image_path, "rb") as file:
-        encoded = base64.b64encode(file.read()).decode()
+    try:
+        with open(local_image_path, "rb") as file:
+            encoded = base64.b64encode(file.read()).decode()
+        st.markdown(
+            f"""
+            <style>
+            .stApp {{
+                background-image: url("data:image/jpg;base64,{encoded}");
+                background-size: cover;
+                background-attachment: fixed;
+            }}
+            .block-container {{
+                background: rgba(0,0,0,0.60);
+                padding: 25px;
+                border-radius: 12px;
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True
+        )
+    except Exception:
+        # if background fails, ignore silently
+        pass
 
-    st.markdown(
-        f"""
-        <style>
-        .stApp {{
-            background-image: url("data:image/jpg;base64,{encoded}");
-            background-size: cover;
-            background-repeat: no-repeat;
-            background-attachment: fixed;
-        }}
-        .block-container {{
-            background: rgba(0,0,0,0.60);
-            padding: 20px;
-            border-radius: 12px;
-        }}
-        </style>
-        """,
-        unsafe_allow_html=True
-    )
+add_bg(BG_PATH)
 
-# add_bg("bgimage.jpg")
-add_bg("assets/bgimage.jpg")
+# --------------------------
+# Load model
+# --------------------------
+model = tf.keras.models.load_model(MODEL_PATH, safe_mode=False, compile=False)
 
-# 🔥 FIXED MODEL LOAD
-# model = tf.keras.models.load_model("plant_model.keras", safe_mode=False, compile=False)
-
-# Use the absolute path for testing if the relative path fails
-# model = tf.keras.models.load_model(
-#    r"C:\Users\ASUS\OneDrive\Desktop\plant-app\plant_model.keras", 
- #   safe_mode=False, 
- #   compile=False
-# )
-
-model = tf.keras.models.load_model(
-    r"C:\Users\ASUS\OneDrive\Desktop\plant-app\plant_model (1).keras",
-    safe_mode=False,
-    compile=False
-)
-
-
-# img_size = 64
-
-img_size = 224
-
-
+# --------------------------
+# Class labels (same order used during training)
+# --------------------------
 class_names = [
     'Pepper_bell__Bacterial_spot',
     'Pepper_bell__healthy',
@@ -72,160 +68,196 @@ class_names = [
     'Tomato_healthy'
 ]
 
+# --------------------------
+# Utility: parse label -> (Plant, Disease)
+# --------------------------
 def split_prediction(label):
-    clean = label.replace("", "").replace("", "_")
-    parts = clean.split("_")
+    # unify underscores, split, and build readable strings
+    label = label.replace("__", "_")
+    parts = label.split("_")
     if parts[-1].lower() == "healthy":
-        plant = " ".join(parts[:-1])
-        disease = "Healthy"
-    else:
-        plant = parts[0]
-        disease = " ".join(parts[1:]).replace("_", " ")
-    return plant.capitalize(), disease.capitalize()
+        plant = parts[0].replace("_", " ").capitalize()
+        return plant, "Healthy"
+    plant = parts[0].replace("_", " ").capitalize()
+    disease = " ".join(parts[1:]).replace("_", " ").strip()
+    return plant, disease.capitalize()
 
+# --------------------------
+# Treatment database (normalized keys)
+# --------------------------
 treatments = {
-    "Bacterial spot": [
+    "bacterial spot": [
         "Spray Copper Oxychloride 50% WP",
         "Use Streptocycline (100 ppm)",
         "Avoid overhead irrigation",
         "Remove infected leaves"
     ],
-    "Early blight": [
+    "early blight": [
         "Spray Mancozeb 75% WP",
         "Use Chlorothalonil",
         "Improve air circulation"
     ],
-    "Late blight": [
+    "late blight": [
         "Use Metalaxyl + Mancozeb (Ridomil Gold)",
         "Spray Dimethomorph",
         "Destroy infected plants"
     ],
-    "Leaf mold": [
+    "leaf mold": [
         "Spray Copper Fungicide",
         "Improve airflow"
     ],
-    "Septoria leaf spot": [
+    "septoria leaf spot": [
         "Apply Mancozeb or Chlorothalonil",
         "Remove infected leaves"
     ],
-    "Spider mites two spotted spider mite": [
+    "spider mites two spotted spider mite": [
         "Spray Abamectin 1.9% EC",
         "Use Neem Oil 0.5%"
     ],
-    "Target spot": [
+    "target spot": [
         "Spray Difenoconazole",
         "Remove infected leaves"
     ],
-    "Tomato yellowleaf curl virus": [
-        "Use Imidacloprid (whitefly control)",
-        "Remove infected plants"
+    "tomato yellowleaf curl virus": [
+        "Use Imidacloprid to control whiteflies",
+        "Remove infected plants immediately"
     ],
-    "Tomato mosaic virus": [
+    "tomato mosaic virus": [
         "Remove infected plants",
-        "Disinfect tools"
+        "Disinfect tools regularly"
     ],
-    "Healthy": [
-        "No treatment needed ✔ Plant is healthy."
+    "healthy": [
+        "No treatment needed ✔ The plant is healthy."
     ]
 }
+# ensure keys lowercased (defensive)
+treatments = {k.lower(): v for k, v in treatments.items()}
 
-descriptions = {
-    "Bacterial spot": "A bacterial infection causing spots & leaf damage.",
-    "Early blight": "Fungal disease causing brown concentric target-like spots.",
-    "Late blight": "Severe fungal disease favored by cool, humid weather.",
-    "Leaf mold": "Thrives in humid areas, causing yellow patches under leaves.",
-    "Healthy": "No symptoms detected."
-}
-
-def water_stress_score(image):
-    gray = np.mean(np.array(image.resize((100, 100))), axis=2)
-    dryness = np.mean(gray)
-    score = max(0, min(100, (dryness / 255) * 100))
-    return round(score, 2)
-
-def disease_severity(image):
-    gray = np.mean(np.array(image.resize((100, 100))), axis=2)
-    damage = np.sum(gray < 100) / gray.size
-    return round(damage * 100, 2)
-
+# --------------------------
+# Fertilizer suggestions
+# --------------------------
 fertilizer = {
     "Tomato": "Apply 15-15-15 NPK or organic compost every 2 weeks.",
     "Pepper": "Use 5-10-10 fertilizer every 15 days.",
     "Potato": "Apply 10-20-20 NPK at planting stage."
 }
 
-def generate_pdf(plant, disease, conf, treat_list):
+# --------------------------
+# Health metric functions
+# --------------------------
+def water_stress_score(image: Image.Image) -> float:
+    arr = np.array(image.resize((100, 100)))
+    if arr.ndim == 3:
+        gray = np.mean(arr, axis=2)
+    else:
+        gray = arr
+    score = (np.mean(gray) / 255.0) * 100.0
+    return round(float(score), 2)
+
+def disease_severity(image: Image.Image) -> float:
+    arr = np.array(image.resize((100, 100)))
+    if arr.ndim == 3:
+        gray = np.mean(arr, axis=2)
+    else:
+        gray = arr
+    damaged = np.sum(gray < 100)
+    severity = (damaged / gray.size) * 100.0
+    return round(float(severity), 2)
+
+# --------------------------
+# PDF generator
+# --------------------------
+def generate_pdf(plant: str, disease: str, conf: float, treat_list: list) -> io.BytesIO:
     from reportlab.pdfgen import canvas
     buffer = io.BytesIO()
-    c = canvas.Canvas(buffer)
-    c.drawString(100, 800, "Plant Disease Report")
-    c.drawString(100, 770, f"Plant: {plant}")
-    c.drawString(100, 750, f"Disease: {disease}")
-    c.drawString(100, 730, f"Confidence: {conf:.2f}%")
-    c.drawString(100, 700, "Treatment:")
-    y = 680
+    c = canvas.Canvas(buffer, pagesize=(595, 842))  # A4-ish
+    c.setFont("Helvetica-Bold", 18)
+    c.drawString(40, 800, "Plant Disease Report")
+    c.setFont("Helvetica", 11)
+    c.drawString(40, 775, f"Plant: {plant}")
+    c.drawString(40, 755, f"Disease: {disease}")
+    c.drawString(40, 735, f"Confidence: {conf:.2f}%")
+    c.drawString(40, 710, "Recommended Treatment:")
+    y = 690
     for t in treat_list:
-        c.drawString(120, y, f"- {t}")
-        y -= 20
+        c.drawString(60, y, f"- {t}")
+        y -= 18
+    c.showPage()
     c.save()
     buffer.seek(0)
     return buffer
 
+# --------------------------
+# Streamlit UI
+# --------------------------
 st.title("🌿 Smart Plant Disease Detection System")
-uploaded = st.file_uploader(
-    "📤 Upload leaf image", 
-    type=["jpg", "jpeg", "png"],
-    key="upload_leaf"
-)
+st.write("Upload a leaf image (JPG/PNG) and click Predict.")
+
+uploaded = st.file_uploader("📤 Upload leaf image", type=["jpg", "jpeg", "png"], key="upload_leaf")
 
 if uploaded:
-    image = Image.open(uploaded)
-    image = image.convert("RGB")
-    st.image(image, width=300)
+    # load and normalize image
+    image = Image.open(uploaded).convert("RGB")
+    st.image(image, caption="Uploaded image", width=320)
 
     if st.button("🔍 Predict Disease"):
-        image_resized = image.resize((img_size, img_size))
-        img_array = np.expand_dims(np.array(image_resized), 0)
+        # preprocess to model input
+        img_resized = image.resize((IMG_SIZE, IMG_SIZE))
+        img_array = np.array(img_resized)  # shape (224,224,3)
+        img_array = np.expand_dims(img_array, axis=0)  # shape (1,224,224,3)
 
+        # model predict
         preds = model.predict(img_array)
-        result = np.argmax(preds)
-        confidence = np.max(preds) * 100
+        idx = int(np.argmax(preds, axis=1)[0])
+        confidence = float(np.max(preds) * 100.0)
+        label = class_names[idx]
 
-        predicted_label = class_names[result]
-        plant_name, disease_name = split_prediction(predicted_label)
+        # parse label -> plant, disease
+        plant_name, disease_name = split_prediction(label)
 
+        # UI output
         st.subheader("🔍 Prediction Result")
-        st.write("🌱 *Plant:*", plant_name)
-        st.write("🦠 *Disease:*", disease_name)
+        st.write("🌱 **Plant:**", plant_name)
+        st.write("🦠 **Disease:**", disease_name)
+        st.write("📊 **Confidence:**", f"{confidence:.2f}%")
+        st.progress(min(int(confidence), 100))
 
-        st.write("📊 *Confidence:*")
-        st.progress(int(confidence))
-
+        # health metrics
         sev = disease_severity(image)
-        st.write(f"🔥 *Disease Severity:* {sev}%")
-
         ws = water_stress_score(image)
-        st.write(f"💧 *Water Stress Score:* {ws}%")
+        st.write(f"🔥 **Disease Severity:** {sev}%")
+        st.write(f"💧 **Water Stress Score:** {ws}%")
+
+        # treatment lookup (normalized)
+        disease_key = disease_name.lower().strip()
+        treat_list = treatments.get(disease_key)
 
         st.subheader("💊 Recommended Treatment")
-        for t_key in treatments:
-            if t_key.lower() in disease_name.lower():
-                for item in treatments[t_key]:
-                    st.write("✔", item)
-                break
+        if treat_list:
+            for t in treat_list:
+                st.write("✔", t)
+        else:
+            # try fallback fuzzy matches (simple contains)
+            matched = None
+            for k in treatments.keys():
+                if k in disease_key or disease_key in k:
+                    matched = treatments[k]
+                    break
+            if matched:
+                for t in matched:
+                    st.write("✔", t)
+                treat_list = matched
+            else:
+                st.write("⚠ No treatment data found for this exact label.")
+                # still provide generic advice
+                st.write("General advice: isolate affected plants, avoid overhead irrigation, maintain airflow, and disinfect tools.")
+                treat_list = ["General advice: isolate affected plants, improve airflow, disinfect tools"]
 
-        fert = fertilizer.get(plant_name, "Use balanced NPK fertilizer.")
+        # fertilizer suggestion
         st.subheader("🌱 Fertilizer Recommendation")
-        st.write(fert)
+        st.write(fertilizer.get(plant_name, "Use balanced NPK fertilizer."))
 
+        # PDF download
+        pdf = generate_pdf(plant_name, disease_name, confidence, treat_list)
+        st.download_button("📥 Download Report as PDF", data=pdf, file_name="Plant_Report.pdf", mime="application/pdf")
 
-        # treat_list = treatments.get(disease_name.lower(), ["No treatment info available"])
-        
-        treat_list = treatments.get(disease_name.title(), ["No treatment info available"])
-
-
-        try:
-            pdf = generate_pdf(plant_name, disease_name, confidence, treat_list)
-            st.download_button("📥 Download Report as PDF", data=pdf, file_name="report.pdf")
-        except:
-            st.error("PDF generation failed. Install reportlab: pip install reportlab")    
