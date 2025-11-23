@@ -97,8 +97,9 @@ history = model.fit(
 
 
 
-
-
-
-
 model.save("plant_model.keras")
+
+
+
+from google.colab import files
+files.download("plant_model.keras")
